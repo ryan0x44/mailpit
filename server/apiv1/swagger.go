@@ -4,6 +4,40 @@ import "github.com/axllent/mailpit/internal/stats"
 
 // These structs are for the purpose of defining swagger HTTP parameters & responses
 
+// Send request
+// swagger:model sendMessageRequestBody
+type sendMessageRequestBody struct {
+	// String of email address to send the message from
+	//
+	// required: true
+	// example: "sender@example.com"
+	From string `json:"from"`
+
+	// Array of email addresses to send the message to
+	//
+	// required: true
+	// example: ["user1@example.com", "user2@example.com"]
+	To []string `json:"to"`
+
+	// String of email subject
+	//
+	// required: true
+	// example: "Hello"
+	Subject string `json:"subject"`
+
+	// String of email HTML body
+	//
+	// required: true
+	// example: "<html><body>Hello</body></html>"
+	BodyHTML string `json:"bodyHtml"`
+
+	// String of email text body
+	//
+	// required: true
+	// example: "Hello"
+	BodyText string `json:"bodyText"`
+}
+
 // Application information
 // swagger:response InfoResponse
 type infoResponse struct {

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/mail"
 	"strconv"
@@ -22,6 +23,132 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/lithammer/shortuuid/v4"
 )
+
+// SendMessage sends a new message
+func SendMessage(w http.ResponseWriter, r *http.Request) {
+	// swagger:route POST /api/v1/messages message SendMessage
+	//
+	// # Send message
+	//
+	// Sends a message to the mailbox
+	//
+	//	Consumes:
+	//	- application/json
+	//
+	//	Produces:
+	//	- text/plain
+	//
+	//	Schemes: http, https
+	//
+	//	Responses:
+	//		200: OKResponse
+	//		default: ErrorResponse
+
+	decoder := json.NewDecoder(r.Body)
+
+	data := sendMessageRequestBody{}
+
+	if err := decoder.Decode(&data); err != nil {
+		httpError(w, err.Error())
+		return
+	}
+
+	from := data.From
+	if len(from) == 0 {
+		httpError(w, "No valid sender address found")
+		return
+	}
+	_, err := mail.ParseAddress(from)
+	if err != nil {
+		httpError(w, "Invalid sender email address: "+from)
+		return
+	}
+
+	tos := data.To
+	if len(tos) == 0 {
+		httpError(w, "No valid recipient addresses found")
+		return
+	}
+
+	for _, to := range tos {
+		address, err := mail.ParseAddress(to)
+
+		if err != nil {
+			httpError(w, "Invalid recipient email address: "+to)
+			return
+		}
+
+		if config.SMTPRelayConfig.AllowedRecipientsRegexp != nil && !config.SMTPRelayConfig.AllowedRecipientsRegexp.MatchString(address.Address) {
+			httpError(w, "Mail address does not match allowlist: "+to)
+			return
+		}
+	}
+
+	subject := data.Subject
+	if len(subject) == 0 {
+		httpError(w, "No valid subject found")
+		return
+	}
+
+	bodyHTML := data.BodyHTML
+	if len(bodyHTML) == 0 {
+		httpError(w, "No valid HTML body found")
+		return
+	}
+
+	bodyText := data.BodyText
+	if len(bodyText) == 0 {
+		httpError(w, "No valid text body found")
+		return
+	}
+
+	clientIP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		fmt.Fprintf(w, "Error parsing request RemoteAddr: %s", err)
+		return
+	}
+
+	message := bytes.NewBuffer(nil)
+	bodyTemplate := "\r\n" +
+		"--boundary\r\n" +
+		"Content-Type: text/plain; charset=\"UTF-8\"\r\n\r\n" +
+		"%s" +
+		"\r\n" +
+		"--boundary\r\n" +
+		"Content-Type: text/html; charset=\"UTF-8\"\r\n\r\n" +
+		"%s" +
+		"\r\n" +
+		"--boundary--\r\n"
+	message.WriteString("Content-Type: multipart/alternative; boundary=boundary\r\n")
+	message.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	message.WriteString(fmt.Sprintf(bodyTemplate, bodyText, bodyHTML))
+	msg := message.Bytes()
+
+	// update message date
+	msg, err = tools.UpdateMessageHeader(msg, "Date", time.Now().Format(time.RFC1123Z))
+	if err != nil {
+		httpError(w, err.Error())
+		return
+	}
+
+	// generate unique ID
+	uid := shortuuid.New() + "@mailpit"
+	// update Message-Id with unique ID
+	msg, err = tools.UpdateMessageHeader(msg, "Message-Id", "<"+uid+">")
+	if err != nil {
+		httpError(w, err.Error())
+		return
+	}
+
+	if err := smtpd.MailHandler(&net.IPAddr{IP: net.ParseIP(clientIP)}, from, tos, msg); err != nil {
+		logger.Log().Errorf("[smtp] error sending message: %s", err.Error())
+		httpError(w, "SMTP error: "+err.Error())
+		return
+	}
+
+	w.Header().Add("Content-Type", "text/plain")
+	_, _ = w.Write([]byte("ok"))
+}
 
 // GetMessages returns a paginated list of messages as JSON
 func GetMessages(w http.ResponseWriter, r *http.Request) {
